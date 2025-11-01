@@ -19,13 +19,36 @@ export default function DashboardPage() {
     router.push("/login");
   };
 
+  // File: app/dashboard/page.tsx
+
   const handleDial = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatus(`Calling ${phoneNumber}...`);
-    // We will add the API call logic here in the next step
-    console.log("Dialing:", phoneNumber, "with strategy:", strategy);
-    //
-    setTimeout(() => setStatus(""), 3000); // Clear status
+
+    try {
+      // --- THIS IS THE CRITICAL PART ---
+      const response = await fetch("/api/dial", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          phoneNumber,
+          strategy,
+        }),
+      });
+      // ---------------------------------
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to dial.");
+      }
+
+      setStatus(`Call initiated (SID: ${data.callSid}). Waiting for answer...`);
+    } catch (error: any) {
+      setStatus(`Error: ${error.message}`);
+    }
   };
 
   if (isPending) {
