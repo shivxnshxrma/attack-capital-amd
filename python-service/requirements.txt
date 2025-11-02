@@ -4,3 +4,6 @@ torch
 transformers
 librosa
 python-multipart
+websockets
+prisma
+python-dotenv

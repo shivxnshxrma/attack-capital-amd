@@ -14,12 +14,16 @@ export async function POST(request: Request) {
     return new NextResponse("Missing strategy or CallSid", { status: 400 });
   }
 
-  // Get our app's public URL
-  const appHost = request.headers.get("host");
-  
-  // Build the final WebSocket URL
-  const streamUrl = `wss://${appHost}/api/audiostream?callSid=${callSid}&strategy=${strategy}`;
+  // --- THIS IS THE FIX ---
+  // Get the ngrok URL from Vercel env vars
+  const pythonServerUrl = process.env.PYTHON_SERVICE_URL; 
+  if (!pythonServerUrl) {
+    return new NextResponse("Python service URL not configured", { status: 500 });
+  }
 
+  // Build the WebSocket URL pointing to your Python server
+  const streamUrl = `wss://${new URL(pythonServerUrl).host}/ws?callSid=${callSid}&strategy=${strategy}`;
+  // --- END FIX ---
   // Create the TwiML response
   const response = new twilio.twiml.VoiceResponse();
   const connect = response.connect();

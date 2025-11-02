@@ -1,40 +1,58 @@
+import os
+from dotenv import load_dotenv
+
+# Find the .env file (it's one directory up)
+dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+load_dotenv(dotenv_path=dotenv_path)
+
+# --- All other imports go below this line ---
 import uvicorn
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File
+# ... (rest of your imports)
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, File
 from transformers import AutoModelForAudioClassification, AutoFeatureExtractor
 import torch
 import librosa
 import numpy as np
 import io
+import json
+import base64
+import asyncio
+from contextlib import asynccontextmanager # <-- NEW IMPORT
+from generated_prisma_client import Prisma
+# --- Prisma Database Setup ---
+prisma = Prisma(datasource={"url": os.environ.get("DIRECT_URL")})
 
-# Initialize our FastAPI app
-app = FastAPI()
-
-# Load the AI model and feature extractor
-# This will download the model the first time it's run
+# --- Model Setup ---
 MODEL_NAME = "jakeBland/wav2vec-vm-finetune"
 model = AutoModelForAudioClassification.from_pretrained(MODEL_NAME)
 feature_extractor = AutoFeatureExtractor.from_pretrained(MODEL_NAME)
-
-# Get the human-readable labels
 labels = model.config.id2label
 
-# --- Health Check Endpoint ---
-@app.get("/")
-def read_root():
-    return {"status": "AI service is running"}
+# --- NEW LIFESPAN FUNCTION ---
+# This code runs on startup and shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # On startup:
+    print("Connecting to database...")
+    await prisma.connect()
+    print("Database connected.")
+    yield
+    # On shutdown:
+    print("Disconnecting from database...")
+    await prisma.disconnect()
+    print("Database disconnected.")
 
-# --- The AI Prediction Endpoint ---
-@app.post("/predict")
-async def predict(audio_file: UploadFile = File(...)):
+# --- Pass the lifespan event to your app ---
+app = FastAPI(lifespan=lifespan)
+
+
+# --- Re-usable Prediction Function ---
+def get_prediction(audio_bytes):
     try:
-        # 1. Read the audio file from the request
-        audio_bytes = await audio_file.read()
-        
-        # 2. Load the audio bytes into an audio processing library
-        # We must resample it to 16kHz, which is what the model was trained on
         audio, sample_rate = librosa.load(io.BytesIO(audio_bytes), sr=16000)
         
-        # 3. Process the audio to get "features"
         inputs = feature_extractor(
             audio, 
             sampling_rate=16000, 
@@ -42,22 +60,95 @@ async def predict(audio_file: UploadFile = File(...)):
             padding=True
         )
         
-        # 4. Make the AI prediction
         with torch.no_grad():
             logits = model(**inputs).logits
             
-        # 5. Get the most likely result
         predicted_id = torch.argmax(logits, dim=-1).item()
         predicted_label = labels[predicted_id]
-
-        return {
-            "label": predicted_label, # This will be "human" or "voicemail"
-            "confidence": torch.nn.functional.softmax(logits, dim=-1).max().item()
-        }
+        confidence = torch.nn.functional.softmax(logits, dim=-1).max().item()
+        
+        return {"label": predicted_label, "confidence": confidence}
         
     except Exception as e:
-        return {"error": str(e)}, 500
+        print(f"Error in get_prediction: {e}")
+        return {"error": str(e)}
 
-# --- Function to run the server ---
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+# --- Health Check Endpoint ---
+@app.get("/")
+def read_root():
+    return {"status": "AI service is running"}
+
+# --- Old /predict endpoint (for curl testing) ---
+@app.post("/predict")
+async def predict(audio_file: bytes = File(...)):
+    result = get_prediction(audio_file)
+    return result
+
+# --- WEBSOCKET ENDPOINT ---
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    print("WebSocket client connected")
+    
+    call_sid = websocket.query_params.get("callSid")
+    if not call_sid:
+        print("Missing callSid, closing socket")
+        await websocket.close()
+        return
+
+    audio_stream = io.BytesIO()
+    
+    try:
+        while True:
+            message = await websocket.receive_text()
+            data = json.loads(message)
+
+            if data["event"] == "start":
+                print(f"Twilio stream started for {call_sid}")
+                
+            if data["event"] == "media":
+                payload = data["media"]["payload"]
+                audio_buffer = base64.b64decode(payload)
+                audio_stream.write(audio_buffer)
+
+            if data["event"] == "stop":
+                print(f"Twilio stream stopped for {call_sid}")
+                break
+                
+    except WebSocketDisconnect:
+        print(f"WebSocket disconnected for {call_sid}")
+    except Exception as e:
+        print(f"Error in WebSocket: {e}")
+    finally:
+        print("Processing full audio stream...")
+        audio_stream.seek(0)
+        full_audio_bytes = audio_stream.read()
+        
+        if len(full_audio_bytes) > 0:
+            result = get_prediction(full_audio_bytes)
+            print(f"AI Result for {call_sid}: {result}")
+            
+            detection_result = "UNKNOWN"
+            if result.get("label") == "human":
+                detection_result = "HUMAN"
+            elif result.get("label") == "voicemail":
+                detection_result = "MACHINE"
+
+            # We don't need connect/disconnect here
+            # because the lifespan event handles it
+            await prisma.calllog.update(
+                where={"twilioCallSid": call_sid},
+                data={
+                    "detectionResult": detection_result,
+                    "rawCallback": json.dumps(result)
+                }
+            )
+            print(f"Database updated for {call_sid}")
+            
+        else:
+            print("No audio received.")
+
+        audio_stream.close()
+        print(f"Closed resources for {call_sid}")
+
+# --- REMOVED the if __name__ == "__main__": block ---
