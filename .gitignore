@@ -41,3 +41,25 @@ yarn-error.log*
 next-env.d.ts
 
 /app/generated/prisma
+
+# Next.js
+.next/
+node_modules/
+.env
+.env.local
+
+# macOS
+.DS_Store
+
+# --- Python Service ---
+# This is the most important part!
+# This ignores your 10,000+ library files
+python-service/venv/
+
+# Ignore Python caches
+python-service/__pycache__/
+python-service/*.pyc
+
+# Ignore your local test audio
+python-service/hello.m4a
+python-service/hello.wav
