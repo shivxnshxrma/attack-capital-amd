@@ -69,7 +69,7 @@ export async function POST(request: Request) {
       const recordingUrl = body.RecordingUrl as string;
       if (!recordingUrl) throw new Error("No RecordingUrl in webhook");
 
-      const audioUrl = `${recordingUrl}.wav`;
+      const audioUrl = recordingUrl;
       const pythonServerUrl = process.env.PYTHON_SERVICE_URL;
 
       // 4a. Download the .wav file from Twilio (with Auth)
