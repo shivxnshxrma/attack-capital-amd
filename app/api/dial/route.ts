@@ -36,19 +36,30 @@ export async function POST(request: Request) {
       });
     } else if (strategy === "HUGGINGFACE" || strategy === "GEMINI_FLASH") {
       
-      // --- THIS IS THE FIX ---
-      // We tell Twilio: "When the call is answered,
-      // contact this URL to get your TwiML instructions."
-      const twimlUrl = `${appUrl}/api/twiml?strategy=${strategy}`;
-      console.log(`Using TwiML URL: ${twimlUrl}`);
+      // --- THE NEW, SIMPLER PIPELINE ---
+      const pythonServerUrl = process.env.PYTHON_SERVICE_URL;
+      if (!pythonServerUrl) throw new Error("PYTHON_SERVICE_URL not set");
 
+      // 1. Build the *static* wss:// URL to your ngrok server
+      const streamUrl = `${pythonServerUrl.replace(
+        "https://",
+        "wss://"
+      )}/ws?strategy=${strategy}`; // No CallSid!
+      
+      console.log(`Using static TwiML with stream URL: ${streamUrl}`);
+
+      // 2. Create the call and pass the TwiML directly
       call = await client.calls.create({
         to: phoneNumber,
         from: process.env.TWILIO_PHONE_NUMBER!,
-        url: twimlUrl, // This is the correct parameter
-        method: "POST",
+        // We provide the TwiML directly, which trial accounts allow.
+        twiml: `<Response>
+                  <Connect>
+                    <Stream url="${streamUrl}" />
+                  </Connect>
+                </Response>`,
       });
-      // -----------------------
+      // ------------------------------------
 
     } else {
       throw new Error("Invalid strategy");
@@ -66,7 +77,7 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json({ status: "dialed", callSid: call.sid });
-  } catch (error: any) {
+  } catch (error: any){
     console.error("Twilio call failed:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

@@ -84,18 +84,17 @@ async def predict(audio_file: bytes = File(...)):
     result = get_prediction(audio_file)
     return result
 
-# --- WEBSOCKET ENDPOINT ---
+# File: python-service/app.py
+# ... (all other code stays the same) ...
+
+# --- NEW WEBSOCKET ENDPOINT ---
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("WebSocket client connected")
     
-    call_sid = websocket.query_params.get("callSid")
-    if not call_sid:
-        print("Missing callSid, closing socket")
-        await websocket.close()
-        return
-
+    # We don't have the CallSid yet. We'll get it from the "start" message.
+    call_sid = None
     audio_stream = io.BytesIO()
     
     try:
@@ -104,7 +103,11 @@ async def websocket_endpoint(websocket: WebSocket):
             data = json.loads(message)
 
             if data["event"] == "start":
+                # --- THIS IS THE FIX ---
+                # The stream has started. NOW we get the CallSid.
+                call_sid = data["start"]["callSid"]
                 print(f"Twilio stream started for {call_sid}")
+                # -----------------------
                 
             if data["event"] == "media":
                 payload = data["media"]["payload"]
@@ -116,10 +119,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 break
                 
     except WebSocketDisconnect:
-        print(f"WebSocket disconnected for {call_sid}")
+        print(f"WebSocket disconnected for {call_sid or 'Unknown Call'}")
     except Exception as e:
         print(f"Error in WebSocket: {e}")
     finally:
+        if not call_sid:
+            print("Stream ended but CallSid was never received.")
+            audio_stream.close()
+            return
+            
         print("Processing full audio stream...")
         audio_stream.seek(0)
         full_audio_bytes = audio_stream.read()
@@ -134,8 +142,6 @@ async def websocket_endpoint(websocket: WebSocket):
             elif result.get("label") == "voicemail":
                 detection_result = "MACHINE"
 
-            # We don't need connect/disconnect here
-            # because the lifespan event handles it
             await prisma.calllog.update(
                 where={"twilioCallSid": call_sid},
                 data={
@@ -150,5 +156,4 @@ async def websocket_endpoint(websocket: WebSocket):
 
         audio_stream.close()
         print(f"Closed resources for {call_sid}")
-
 # --- REMOVED the if __name__ == "__main__": block ---
