@@ -20,49 +20,31 @@ export async function POST(request: Request) {
   const { phoneNumber, strategy } = await request.json();
   const appUrl = process.env.NEXT_PUBLIC_APP_URL;
 
+  // --- This is the new "master" webhook URL for all strategies ---
+  const webhookUrl = `${appUrl}/api/webhooks/twilio`;
+
   try {
-    let call;
-    let twiml;
+    let callOptions: any = {
+      to: phoneNumber,
+      from: process.env.TWILIO_PHONE_NUMBER!,
+      statusCallback: webhookUrl,
+      statusCallbackEvent: ["completed"],
+      statusCallbackMethod: "POST",
+    };
 
     if (strategy === "TWILIO_NATIVE") {
-      // --- NATIVE STRATEGY (No change) ---
-      twiml = `<Response><Say>Connecting your call</Say></Response>`;
-      call = await client.calls.create({
-        to: phoneNumber,
-        from: process.env.TWILIO_PHONE_NUMBER!,
-        machineDetection: "Enable",
-        statusCallback: `${appUrl}/api/webhooks/twilio`, // The AMD result webhook
-        statusCallbackEvent: ["completed"],
-        statusCallbackMethod: "POST",
-        twiml: twiml,
-      });
-
+      callOptions.machineDetection = "Enable";
+      callOptions.twiml = `<Response><Say>Connecting</Say></Response>`;
+      
     } else if (strategy === "HUGGINGFACE" || strategy === "GEMINI_FLASH") {
-      // --- NEW <Record> STRATEGY ---
-      
-      // We tell Twilio to:
-      // 1. Record 3 seconds of audio.
-      // 2. When done, POST the recording URL to our new webhook.
-      // 3. Hang up.
-      twiml = `<Response>
-                 <Record 
-                   maxLength="3" 
-                   action="${appUrl}/api/webhooks/recording?strategy=${strategy}" 
-                   recordingStatusCallback="${appUrl}/api/webhooks/recording?strategy=${strategy}" 
-                   recordingStatusCallbackMethod="POST"
-                 />
-                 <Hangup />
-               </Response>`;
-      
-      call = await client.calls.create({
-        to: phoneNumber,
-        from: process.env.TWILIO_PHONE_NUMBER!,
-        twiml: twiml,
-      });
-      
-    } else {
-      throw new Error("Invalid strategy");
+      // For AI strategies, just record the call.
+      // The webhook will do the analysis after.
+      callOptions.record = true; 
+      callOptions.twiml = `<Response><Say>Hello, you are being recorded for analysis.</Say><Hangup /></Response>`;
     }
+
+    // Create the call
+    const call = await client.calls.create(callOptions);
 
     // Log to our database
     await prisma.callLog.create({
