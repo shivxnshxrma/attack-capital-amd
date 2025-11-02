@@ -32,7 +32,7 @@ export async function POST(request: Request) {
 
   // 5. Get the data we care about
   const callSid = body.CallSid as string;
-  const amdStatus = body.AnsweringMachineDetectionStatus as string;
+  const amdStatus = body.AnsweredBy as string;
 
   let detectionResult: CallStatus;
 
