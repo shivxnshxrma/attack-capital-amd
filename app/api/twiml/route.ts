@@ -3,15 +3,13 @@ import { NextResponse } from "next/server";
 import twilio from "twilio";
 
 export async function POST(request: Request) {
-  console.log("--- TwiML Route Called ---"); // LOG 1
+  console.log("--- TwiML Route Called ---");
 
   const { searchParams } = new URL(request.url);
   const strategy = searchParams.get("strategy");
-  console.log(`Strategy: ${strategy}`); // LOG 2
 
   const formData = await request.formData();
   const callSid = formData.get("CallSid");
-  console.log(`CallSid: ${callSid}`); // LOG 3
 
   if (!strategy || !callSid) {
     console.error("TwiML Error: Missing strategy or CallSid");
@@ -20,24 +18,19 @@ export async function POST(request: Request) {
 
   // Get the ngrok URL from Vercel env vars
   const pythonServerUrl = process.env.PYTHON_SERVICE_URL;
-  console.log(`PYTHON_SERVICE_URL: ${pythonServerUrl}`); // LOG 4
-
   if (!pythonServerUrl) {
     console.error("TwiML Error: PYTHON_SERVICE_URL not configured");
     return new NextResponse("Python service URL not configured", { status: 500 });
   }
 
-  // Build the WebSocket URL pointing to your Python server
-  let pythonHost;
-  try {
-    pythonHost = new URL(pythonServerUrl).host; // e.g., "random.ngrok-free.app"
-  } catch (e) {
-    console.error("TwiML Error: Invalid PYTHON_SERVICE_URL", e);
-    return new NextResponse("Invalid Python service URL", { status: 500 });
-  }
+  // --- THIS IS THE FIX ---
+  // We need the full wss:// URL, not just the host.
+  // We also replace "https" with "wss"
+  const pythonHost = pythonServerUrl.replace("https://", "wss://");
+  const streamUrl = `${pythonHost}/ws?callSid=${callSid}&strategy=${strategy}`;
+  // -----------------------
 
-const streamUrl = `wss://${pythonHost}/ws?callSid=${callSid}&strategy=${strategy}`;
-  console.log(`Generated Stream URL: ${streamUrl}`); // LOG 5
+  console.log(`Generated Stream URL: ${streamUrl}`);
 
   const response = new twilio.twiml.VoiceResponse();
   const connect = response.connect();
@@ -45,7 +38,7 @@ const streamUrl = `wss://${pythonHost}/ws?callSid=${callSid}&strategy=${strategy
     url: streamUrl,
   });
 
-  console.log("Sending TwiML response to Twilio..."); // LOG 6
+  console.log("Sending TwiML response to Twilio...");
 
   return new NextResponse(response.toString(), {
     headers: { "Content-Type": "text/xml" },
