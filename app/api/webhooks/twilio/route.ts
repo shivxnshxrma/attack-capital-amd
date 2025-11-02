@@ -5,11 +5,13 @@ import twilio from "twilio";
 
 const prisma = new PrismaClient();
 
-// Create a single, reusable Twilio client
 const client = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
+
+// --- NEW SLEEP FUNCTION ---
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Helper to create the Basic Auth header for 'fetch'
 function getTwilioAuthHeader() {
@@ -72,20 +74,29 @@ export async function POST(request: Request) {
       });
     } else if (call.strategyUsed === "HUGGINGFACE") {
       // --- STRATEGY 3: HUGGING FACE ---
-      
-      // 4a. Make an authenticated API call to fetch the recording
       console.log(`Fetching recordings for ${callSid}...`);
+
+      // --- THIS IS THE FIX ---
+      // Wait 5 seconds for Twilio to process the recording file
+      console.log("Waiting 5 seconds for recording to process...");
+      await sleep(5000);
+      console.log("Finished waiting. Fetching recording...");
+      // -----------------------
+
       const recordings = await client.recordings.list({
         callSid: callSid,
         limit: 1,
       });
 
       if (!recordings || recordings.length === 0) {
-        throw new Error(`No recordings found for ${callSid}`);
+        throw new Error(`No recordings found for ${callSid} after waiting`);
       }
 
       const recording = recordings[0];
-      const mediaUrl = `https://api.twilio.com${recording.uri.replace(".json", ".wav")}`;
+      const mediaUrl = `https://api.twilio.com${recording.uri.replace(
+        ".json",
+        ".wav"
+      )}`;
       console.log(`Found recording URL: ${mediaUrl}`);
       
       const pythonServerUrl = process.env.PYTHON_SERVICE_URL;
@@ -99,10 +110,11 @@ export async function POST(request: Request) {
 
       if (!audioResponse.ok) {
         throw new Error(
-          `Failed to download audio: ${audioResponse.statusText}`
+          `Failed to download audio: ${audioResponse.statusText} (URL: ${mediaUrl})`
         );
       }
       const audioBlob = await audioResponse.blob();
+      console.log("Audio downloaded successfully.");
 
       // 4c. Send it to your local Python server
       const aiResponse = await fetch(`${pythonServerUrl}/predict`, {
@@ -113,6 +125,7 @@ export async function POST(request: Request) {
 
       if (!aiResponse.ok) throw new Error("AI service failed");
       const aiResult = await aiResponse.json();
+      console.log("AI result received:", aiResult);
 
       let result: CallStatus = "UNKNOWN";
       if (aiResult.label === "human") result = "HUMAN";
@@ -126,6 +139,7 @@ export async function POST(request: Request) {
           rawCallback: aiResult as Prisma.JsonObject,
         },
       });
+      console.log("Database updated.");
     }
 
     return NextResponse.json({ status: "success" });
