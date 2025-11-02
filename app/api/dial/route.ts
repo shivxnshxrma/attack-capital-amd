@@ -8,7 +8,6 @@ import twilio from "twilio";
 const prisma = new PrismaClient();
 
 export async function POST(request: Request) {
-  // 1. Get user and Twilio client
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -18,7 +17,6 @@ export async function POST(request: Request) {
     process.env.TWILIO_AUTH_TOKEN
   );
 
-  // 2. Get form data
   const { phoneNumber, strategy } = await request.json();
   const appUrl = process.env.NEXT_PUBLIC_APP_URL;
 
@@ -38,34 +36,25 @@ export async function POST(request: Request) {
       });
     } else if (strategy === "HUGGINGFACE" || strategy === "GEMINI_FLASH") {
       
-      // --- NEW STREAMING STRATEGY ---
-      
-      // 1. Create the call with dummy TwiML
+      // --- THIS IS THE FIX ---
+      // We tell Twilio: "When the call is answered,
+      // contact this URL to get your TwiML instructions."
+      const twimlUrl = `${appUrl}/api/twiml?strategy=${strategy}`;
+      console.log(`Using TwiML URL: ${twimlUrl}`);
+
       call = await client.calls.create({
         to: phoneNumber,
         from: process.env.TWILIO_PHONE_NUMBER!,
-        twiml: `<Response><Say>Please wait one moment.</Say><Pause length="60"/></Response>`,
+        url: twimlUrl, // This is the correct parameter
+        method: "POST",
       });
-      
-      // 2. Get the ngrok URL and build the stream URL
-      const pythonServerUrl = process.env.PYTHON_SERVICE_URL;
-      if (!pythonServerUrl) throw new Error("PYTHON_SERVICE_URL not set");
-      
-      const pythonHost = pythonServerUrl.replace("https://", "wss://");
-      const streamUrl = `${pythonHost}/ws?callSid=${call.sid}&strategy=${strategy}`;
-      
-      // 3. Immediately UPDATE the call with the *real* TwiML
-      await client.calls(call.sid).update({
-        twiml: `<Response><Connect><Stream url="${streamUrl}" /></Connect></Response>`,
-      });
-      
-      console.log(`Updated call ${call.sid} to stream to ${streamUrl}`);
-      
+      // -----------------------
+
     } else {
       throw new Error("Invalid strategy");
     }
 
-    // 4. Log to our database
+    // Log to our database
     await prisma.callLog.create({
       data: {
         toNumber: phoneNumber,
