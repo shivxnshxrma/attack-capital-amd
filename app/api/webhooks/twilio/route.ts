@@ -5,11 +5,17 @@ import twilio from "twilio";
 
 const prisma = new PrismaClient();
 
-// Helper to create the Basic Auth header
+// Create a single, reusable Twilio client
+const client = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+// Helper to create the Basic Auth header for 'fetch'
 function getTwilioAuthHeader() {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  const credentials = Buffer.from(`${accountSid}:${authToken}`).toString("base64");
+  const credentials = Buffer.from(
+    `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
+  ).toString("base64");
   return `Basic ${credentials}`;
 }
 
@@ -66,16 +72,28 @@ export async function POST(request: Request) {
       });
     } else if (call.strategyUsed === "HUGGINGFACE") {
       // --- STRATEGY 3: HUGGING FACE ---
-      const recordingUrl = body.RecordingUrl as string;
-      if (!recordingUrl) throw new Error("No RecordingUrl in webhook");
+      
+      // 4a. Make an authenticated API call to fetch the recording
+      console.log(`Fetching recordings for ${callSid}...`);
+      const recordings = await client.recordings.list({
+        callSid: callSid,
+        limit: 1,
+      });
 
-      const audioUrl = recordingUrl;
+      if (!recordings || recordings.length === 0) {
+        throw new Error(`No recordings found for ${callSid}`);
+      }
+
+      const recording = recordings[0];
+      const mediaUrl = `https://api.twilio.com${recording.uri.replace(".json", ".wav")}`;
+      console.log(`Found recording URL: ${mediaUrl}`);
+      
       const pythonServerUrl = process.env.PYTHON_SERVICE_URL;
 
-      // 4a. Download the .wav file from Twilio (with Auth)
-      const audioResponse = await fetch(audioUrl, {
+      // 4b. Download the .wav file (using 'fetch' with auth)
+      const audioResponse = await fetch(mediaUrl, {
         headers: {
-          Authorization: getTwilioAuthHeader(), // <-- THIS IS THE FIX
+          Authorization: getTwilioAuthHeader(),
         },
       });
 
@@ -86,7 +104,7 @@ export async function POST(request: Request) {
       }
       const audioBlob = await audioResponse.blob();
 
-      // 4b. Send it to your local Python server
+      // 4c. Send it to your local Python server
       const aiResponse = await fetch(`${pythonServerUrl}/predict`, {
         method: "POST",
         body: audioBlob,
@@ -100,7 +118,7 @@ export async function POST(request: Request) {
       if (aiResult.label === "human") result = "HUMAN";
       if (aiResult.label === "voicemail") result = "MACHINE";
 
-      // 4c. Update the database
+      // 4d. Update the database
       await prisma.callLog.update({
         where: { twilioCallSid: callSid },
         data: {
