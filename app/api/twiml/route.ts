@@ -35,8 +35,8 @@ export async function POST(request: Request) {
     console.error("TwiML Error: Invalid PYTHON_SERVICE_URL", e);
     return new NextResponse("Invalid Python service URL", { status: 500 });
   }
-  
-  const streamUrl = `wss://${pythonHost}/ws?callSid=${callSid}&strategy=${strategy}`;
+
+const streamUrl = `wss://${pythonHost}/ws?callSid=${callSid}&strategy=${strategy}`;
   console.log(`Generated Stream URL: ${streamUrl}`); // LOG 5
 
   const response = new twilio.twiml.VoiceResponse();
