@@ -22,45 +22,44 @@ export async function POST(request: Request) {
 
   try {
     let call;
+    let twiml;
 
     if (strategy === "TWILIO_NATIVE") {
       // --- NATIVE STRATEGY (No change) ---
+      twiml = `<Response><Say>Connecting your call</Say></Response>`;
       call = await client.calls.create({
         to: phoneNumber,
         from: process.env.TWILIO_PHONE_NUMBER!,
         machineDetection: "Enable",
-        statusCallback: `${appUrl}/api/webhooks/twilio`,
+        statusCallback: `${appUrl}/api/webhooks/twilio`, // The AMD result webhook
         statusCallbackEvent: ["completed"],
         statusCallbackMethod: "POST",
-        twiml: `<Response><Say>Connecting your call</Say></Response>`,
+        twiml: twiml,
       });
+
     } else if (strategy === "HUGGINGFACE" || strategy === "GEMINI_FLASH") {
+      // --- NEW <Record> STRATEGY ---
       
-      // --- THE NEW, SIMPLER PIPELINE ---
-      const pythonServerUrl = process.env.PYTHON_SERVICE_URL;
-      if (!pythonServerUrl) throw new Error("PYTHON_SERVICE_URL not set");
-
-      // 1. Build the *static* wss:// URL to your ngrok server
-      const streamUrl = `${pythonServerUrl.replace(
-        "https://",
-        "wss://"
-      )}/ws?strategy=${strategy}`; // No CallSid!
+      // We tell Twilio to:
+      // 1. Record 3 seconds of audio.
+      // 2. When done, POST the recording URL to our new webhook.
+      // 3. Hang up.
+      twiml = `<Response>
+                 <Record 
+                   maxLength="3" 
+                   action="${appUrl}/api/webhooks/recording?strategy=${strategy}" 
+                   recordingStatusCallback="${appUrl}/api/webhooks/recording?strategy=${strategy}" 
+                   recordingStatusCallbackMethod="POST"
+                 />
+                 <Hangup />
+               </Response>`;
       
-      console.log(`Using static TwiML with stream URL: ${streamUrl}`);
-
-      // 2. Create the call and pass the TwiML directly
       call = await client.calls.create({
         to: phoneNumber,
         from: process.env.TWILIO_PHONE_NUMBER!,
-        // We provide the TwiML directly, which trial accounts allow.
-        twiml: `<Response>
-                  <Connect>
-                    <Stream url="${streamUrl}" />
-                  </Connect>
-                </Response>`,
+        twiml: twiml,
       });
-      // ------------------------------------
-
+      
     } else {
       throw new Error("Invalid strategy");
     }
@@ -77,7 +76,7 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json({ status: "dialed", callSid: call.sid });
-  } catch (error: any){
+  } catch (error: any) {
     console.error("Twilio call failed:", error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
