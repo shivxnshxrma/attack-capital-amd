@@ -10,17 +10,6 @@ const client = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// --- NEW SLEEP FUNCTION ---
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Helper to create the Basic Auth header for 'fetch'
-function getTwilioAuthHeader() {
-  const credentials = Buffer.from(
-    `${process.env.TWILIO_ACCOUNT_SID}:${process.env.TWILIO_AUTH_TOKEN}`
-  ).toString("base64");
-  return `Basic ${credentials}`;
-}
-
 export async function POST(request: Request) {
   const formData = await request.formData();
   const body = Object.fromEntries(formData);
@@ -35,7 +24,6 @@ export async function POST(request: Request) {
     body
   );
   if (!isValid) {
-    console.error("Invalid Twilio signature");
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 
@@ -51,7 +39,6 @@ export async function POST(request: Request) {
   });
 
   if (!call) {
-    console.error(`No call log found for ${callSid}`);
     return NextResponse.json({ error: "No call log found" });
   }
 
@@ -73,85 +60,33 @@ export async function POST(request: Request) {
         },
       });
     } else if (call.strategyUsed === "HUGGINGFACE") {
-      // --- STRATEGY 3: HUGGING FACE ---
-      console.log(`Fetching recordings for ${callSid}...`);
-
-      // --- THIS IS THE FIX ---
-      // Wait 5 seconds for Twilio to process the recording file
-      console.log("Waiting 5 seconds for recording to process...");
-      await sleep(5000);
-      console.log("Finished waiting. Fetching recording...");
-      // -----------------------
-
-      const recordings = await client.recordings.list({
-        callSid: callSid,
-        limit: 1,
-      });
-
-      if (!recordings || recordings.length === 0) {
-        throw new Error(`No recordings found for ${callSid} after waiting`);
-      }
-
-      const recording = recordings[0];
-      const mediaUrl = `https://api.twilio.com${recording.uri.replace(
-        ".json",
-        ".wav"
-      )}`;
-      console.log(`Found recording URL: ${mediaUrl}`);
+      // --- STRATEGY 3: FORWARD TO PYTHON ---
       
+      // 4a. Get the recording URL
+      const recordingUrl = body.RecordingUrl as string;
+      if (!recordingUrl) throw new Error("No RecordingUrl in webhook");
+
       const pythonServerUrl = process.env.PYTHON_SERVICE_URL;
 
-      // 4b. Download the .wav file (using 'fetch' with auth)
-      const audioResponse = await fetch(mediaUrl, {
-        headers: {
-          Authorization: getTwilioAuthHeader(),
-        },
-      });
-
-      if (!audioResponse.ok) {
-        throw new Error(
-          `Failed to download audio: ${audioResponse.statusText} (URL: ${mediaUrl})`
-        );
-      }
-      const audioBlob = await audioResponse.blob();
-      console.log("Audio downloaded successfully.");
-
-      // 4c. Send it to your local Python server
-      const aiResponse = await fetch(`${pythonServerUrl}/predict`, {
+      // 4b. Just send the *job* to the Python server.
+      // We do NOT wait for it to finish.
+      fetch(`${pythonServerUrl}/predict_from_url`, {
         method: "POST",
-        body: audioBlob,
-        headers: { "Content-Type": "audio/wav" },
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          callSid: callSid,
+          recordingUrl: `${recordingUrl}.wav`, // Add .wav here
+        }),
       });
 
-      if (!aiResponse.ok) throw new Error("AI service failed");
-      const aiResult = await aiResponse.json();
-      console.log("AI result received:", aiResult);
-
-      let result: CallStatus = "UNKNOWN";
-      if (aiResult.label === "human") result = "HUMAN";
-      if (aiResult.label === "voicemail") result = "MACHINE";
-
-      // 4d. Update the database
-      await prisma.callLog.update({
-        where: { twilioCallSid: callSid },
-        data: {
-          detectionResult: result,
-          rawCallback: aiResult as Prisma.JsonObject,
-        },
-      });
-      console.log("Database updated.");
+      console.log(`Forwarded job for ${callSid} to Python service.`);
     }
 
-    return NextResponse.json({ status: "success" });
+    // Return a 200 OK to Twilio immediately.
+    return NextResponse.json({ status: "webhook received" });
+
   } catch (error: any) {
     console.error(`Webhook failed for ${callSid}:`, error.message);
-    await prisma.callLog.update({
-      where: { twilioCallSid: callSid },
-      data: {
-        detectionResult: "FAILED",
-        rawCallback: { error: error.message } as Prisma.JsonObject,
-      },
-    });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
