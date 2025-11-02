@@ -62,20 +62,23 @@ export async function POST(request: Request) {
     } else if (call.strategyUsed === "HUGGINGFACE") {
       // --- STRATEGY 3: FORWARD TO PYTHON ---
       
-      // 4a. Get the recording URL
       const recordingUrl = body.RecordingUrl as string;
       if (!recordingUrl) throw new Error("No RecordingUrl in webhook");
 
+      // We need the full recording media URL, not the .json one
+      const mediaUrl = `https://api.twilio.com${recordingUrl}.wav`;
       const pythonServerUrl = process.env.PYTHON_SERVICE_URL;
 
       // 4b. Just send the *job* to the Python server.
-      // We do NOT wait for it to finish.
+      console.log(`Forwarding job for ${callSid} to ${pythonServerUrl}`); // <-- ADDED LOG
+      
+      // We do NOT wait for it to finish (fire-and-forget)
       fetch(`${pythonServerUrl}/predict_from_url`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           callSid: callSid,
-          recordingUrl: `${recordingUrl}.wav`, // Add .wav here
+          recordingUrl: mediaUrl, // <-- THIS IS THE FIX
         }),
       });
 
