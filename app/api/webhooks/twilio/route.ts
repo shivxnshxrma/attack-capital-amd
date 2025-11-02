@@ -5,13 +5,21 @@ import twilio from "twilio";
 
 const prisma = new PrismaClient();
 
+// Helper to create the Basic Auth header
+function getTwilioAuthHeader() {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const credentials = Buffer.from(`${accountSid}:${authToken}`).toString("base64");
+  return `Basic ${credentials}`;
+}
+
 export async function POST(request: Request) {
   const formData = await request.formData();
   const body = Object.fromEntries(formData);
-  
+
   // 1. Validate the webhook
   const twilioSignature = request.headers.get("X-Twilio-Signature");
-  const webhookUrl = request.url; // We use the simple, correct URL
+  const webhookUrl = request.url;
   const isValid = twilio.validateRequest(
     process.env.TWILIO_AUTH_TOKEN!,
     twilioSignature!,
@@ -28,12 +36,12 @@ export async function POST(request: Request) {
   if (!callSid) {
     return NextResponse.json({ error: "Missing CallSid" });
   }
-  
-  // 3. Find out which strategy this call used
+
+  // 3. Find the call in our DB
   const call = await prisma.callLog.findUnique({
     where: { twilioCallSid: callSid },
   });
-  
+
   if (!call) {
     console.error(`No call log found for ${callSid}`);
     return NextResponse.json({ error: "No call log found" });
@@ -45,15 +53,17 @@ export async function POST(request: Request) {
       // --- STRATEGY 1: NATIVE AMD ---
       const amdStatus = body.AnsweredBy as string;
       let result: CallStatus = "UNKNOWN";
-      
+
       if (amdStatus === "human") result = "HUMAN";
       if (amdStatus === "machine_start") result = "MACHINE";
-      
+
       await prisma.callLog.update({
         where: { twilioCallSid: callSid },
-        data: { detectionResult: result, rawCallback: body as Prisma.JsonObject },
+        data: {
+          detectionResult: result,
+          rawCallback: body as Prisma.JsonObject,
+        },
       });
-      
     } else if (call.strategyUsed === "HUGGINGFACE") {
       // --- STRATEGY 3: HUGGING FACE ---
       const recordingUrl = body.RecordingUrl as string;
@@ -62,8 +72,18 @@ export async function POST(request: Request) {
       const audioUrl = `${recordingUrl}.wav`;
       const pythonServerUrl = process.env.PYTHON_SERVICE_URL;
 
-      // 4a. Download the .wav file from Twilio
-      const audioResponse = await fetch(audioUrl);
+      // 4a. Download the .wav file from Twilio (with Auth)
+      const audioResponse = await fetch(audioUrl, {
+        headers: {
+          Authorization: getTwilioAuthHeader(), // <-- THIS IS THE FIX
+        },
+      });
+
+      if (!audioResponse.ok) {
+        throw new Error(
+          `Failed to download audio: ${audioResponse.statusText}`
+        );
+      }
       const audioBlob = await audioResponse.blob();
 
       // 4b. Send it to your local Python server
@@ -72,28 +92,33 @@ export async function POST(request: Request) {
         body: audioBlob,
         headers: { "Content-Type": "audio/wav" },
       });
-      
+
       if (!aiResponse.ok) throw new Error("AI service failed");
       const aiResult = await aiResponse.json();
-      
+
       let result: CallStatus = "UNKNOWN";
       if (aiResult.label === "human") result = "HUMAN";
       if (aiResult.label === "voicemail") result = "MACHINE";
-      
+
       // 4c. Update the database
       await prisma.callLog.update({
         where: { twilioCallSid: callSid },
-        data: { detectionResult: result, rawCallback: aiResult as Prisma.JsonObject },
+        data: {
+          detectionResult: result,
+          rawCallback: aiResult as Prisma.JsonObject,
+        },
       });
     }
-    
-    return NextResponse.json({ status: "success" });
 
+    return NextResponse.json({ status: "success" });
   } catch (error: any) {
     console.error(`Webhook failed for ${callSid}:`, error.message);
     await prisma.callLog.update({
       where: { twilioCallSid: callSid },
-      data: { detectionResult: "FAILED", rawCallback: { error: error.message } as Prisma.JsonObject },
+      data: {
+        detectionResult: "FAILED",
+        rawCallback: { error: error.message } as Prisma.JsonObject,
+      },
     });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
