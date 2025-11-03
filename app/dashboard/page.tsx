@@ -51,7 +51,7 @@ export default function DashboardPage() {
   // 4. If we get here, we are not loading AND we have a session.
   // It is now safe to render the dashboard.
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 text-black">
       {/* Header */}
       <header className="bg-white shadow-sm">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">

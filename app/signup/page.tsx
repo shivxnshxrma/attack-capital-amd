@@ -33,7 +33,7 @@ export default function SignUpPage() {
   };
 
   return (
-    <div className="flex justify-center items-center min-h-screen bg-gray-100">
+    <div className="flex justify-center items-center min-h-screen bg-gray-100 text-black">
       <form
         onSubmit={handleSubmit}
         className="p-8 bg-white rounded-lg shadow-md w-96"
