@@ -25,8 +25,8 @@ export default function LoginPage() {
       setError(error.message||"Something went wrong!");
     }
     if (data) {
-      router.push("/dashboard");
-    }
+  window.location.href = "/dashboard"; // Forces a full page reload
+}
   };
 
   return (

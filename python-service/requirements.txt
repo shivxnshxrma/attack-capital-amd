@@ -8,3 +8,4 @@ websockets
 prisma
 python-dotenv
 httpx
+google-generativeai

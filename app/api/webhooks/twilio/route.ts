@@ -1,5 +1,5 @@
 // File: app/api/webhooks/twilio/route.ts
-import { NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server"; // 1. Import NextRequest
 import { PrismaClient, Prisma, CallStatus } from "@prisma/client";
 import twilio from "twilio";
 
@@ -10,30 +10,42 @@ const client = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) { // 2. Change type from Request to NextRequest
   const formData = await request.formData();
   const body = Object.fromEntries(formData);
 
-  // 1. Validate the webhook
+  // --- THIS IS THE NEW VALIDATION LOGIC ---
   const twilioSignature = request.headers.get("X-Twilio-Signature");
-  const webhookUrl = request.url;
+
+  const forwardedHost = request.headers.get("x-forwarded-host");
+  const forwardedProto = request.headers.get("x-forwarded-proto");
+  
+  if (!forwardedHost || !forwardedProto) {
+    console.error("Missing x-forwarded headers. Is ngrok running?");
+    return NextResponse.json({ error: "Invalid proxy" }, { status: 400 });
+  }
+
+  // 3. This line will now work
+  const webhookUrl = `${forwardedProto}://${forwardedHost}${request.nextUrl.pathname}`;
+  
   const isValid = twilio.validateRequest(
     process.env.TWILIO_AUTH_TOKEN!,
     twilioSignature!,
     webhookUrl,
     body
   );
+  
   if (!isValid) {
+    console.error("Invalid Twilio signature. URL mismatch.");
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
+  // --- END NEW VALIDATION LOGIC ---
 
-  // 2. Get the CallSid
   const callSid = body.CallSid as string;
   if (!callSid) {
     return NextResponse.json({ error: "Missing CallSid" });
   }
 
-  // 3. Find the call in our DB
   const call = await prisma.callLog.findUnique({
     where: { twilioCallSid: callSid },
   });
@@ -42,16 +54,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "No call log found" });
   }
 
-  // 4. Handle based on strategy
   try {
     if (call.strategyUsed === "TWILIO_NATIVE") {
-      // --- STRATEGY 1: NATIVE AMD ---
       const amdStatus = body.AnsweredBy as string;
       let result: CallStatus = "UNKNOWN";
-
       if (amdStatus === "human") result = "HUMAN";
       if (amdStatus === "machine_start") result = "MACHINE";
-
       await prisma.callLog.update({
         where: { twilioCallSid: callSid },
         data: {
@@ -59,33 +67,32 @@ export async function POST(request: Request) {
           rawCallback: body as Prisma.JsonObject,
         },
       });
-    } else if (call.strategyUsed === "HUGGINGFACE") {
-      // --- STRATEGY 3: FORWARD TO PYTHON ---
-      
+
+    } else if (
+      call.strategyUsed === "HUGGINGFACE" ||
+      call.strategyUsed === "GEMINI_FLASH"
+    ) {
       const recordingUrl = body.RecordingUrl as string;
       if (!recordingUrl) throw new Error("No RecordingUrl in webhook");
 
-      // We need the full recording media URL, not the .json one
-      const mediaUrl = `https://api.twilio.com${recordingUrl}.wav`;
+      const mediaUrl = `${recordingUrl}.wav`;
       const pythonServerUrl = process.env.PYTHON_SERVICE_URL;
 
-      // 4b. Just send the *job* to the Python server.
-      console.log(`Forwarding job for ${callSid} to ${pythonServerUrl}`); // <-- ADDED LOG
+      console.log(`Forwarding job for ${callSid} to ${pythonServerUrl}`);
       
-      // We do NOT wait for it to finish (fire-and-forget)
       fetch(`${pythonServerUrl}/predict_from_url`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           callSid: callSid,
-          recordingUrl: mediaUrl, // <-- THIS IS THE FIX
+          recordingUrl: mediaUrl,
+          strategy: call.strategyUsed,
         }),
       });
 
-      console.log(`Forwarded job for ${callSid} to Python service.`);
+      console.log(`Forwarded job for ${callSid} (Strategy: ${call.strategyUsed})`);
     }
 
-    // Return a 200 OK to Twilio immediately.
     return NextResponse.json({ status: "webhook received" });
 
   } catch (error: any) {

@@ -1,7 +1,7 @@
 // File: app/dashboard/page.tsx
 "use client";
 
-import { useState } from "react";
+import { useState } from "react"; // 1. Remove useEffect
 import { useRouter } from "next/navigation";
 import { useSession, signOut } from "@/lib/auth-client";
 
@@ -9,49 +9,38 @@ export default function DashboardPage() {
   const { data: session, isPending } = useSession();
   const router = useRouter();
 
-  // State for our dialer form
   const [phoneNumber, setPhoneNumber] = useState("");
   const [strategy, setStrategy] = useState("TWILIO_NATIVE");
-  const [status, setStatus] = useState(""); // To show "Calling..."
+  const [status, setStatus] = useState("");
+
+  // --- 2. REMOVED THE BAD useEffect REDIRECT ---
 
   const handleSignOut = async () => {
     await signOut();
     router.push("/login");
   };
 
-  // File: app/dashboard/page.tsx
-
   const handleDial = async (e: React.FormEvent) => {
     e.preventDefault();
     setStatus(`Calling ${phoneNumber}...`);
-
+    
     try {
-      // --- THIS IS THE CRITICAL PART ---
       const response = await fetch("/api/dial", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          phoneNumber,
-          strategy,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phoneNumber, strategy }),
       });
-      // ---------------------------------
-
       const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to dial.");
-      }
-
-      setStatus(`Call initiated (SID: ${data.callSid}). Waiting for answer...`);
+      if (!response.ok) throw new Error(data.error || "Failed to dial.");
+      setStatus(`Call initiated (SID: ${data.callSid}). Waiting...`);
     } catch (error: any) {
       setStatus(`Error: ${error.message}`);
     }
   };
 
-  if (isPending) {
+  // 3. This is the new, simpler loading check.
+  // We wait for the hook to finish *and* for the session to exist.
+  if (isPending || !session) {
     return (
       <div className="flex justify-center items-center min-h-screen">
         Loading...
@@ -59,12 +48,8 @@ export default function DashboardPage() {
     );
   }
 
-  if (!session) {
-    // This shouldn't happen if middleware is correct, but it's good practice
-    router.push("/login");
-    return null;
-  }
-
+  // 4. If we get here, we are not loading AND we have a session.
+  // It is now safe to render the dashboard.
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -90,7 +75,6 @@ export default function DashboardPage() {
         <div className="bg-white p-8 rounded-lg shadow-md w-full">
           <h2 className="text-2xl font-semibold mb-6">Dialer</h2>
           <form onSubmit={handleDial} className="space-y-6">
-            {/* Phone Number Input */}
             <div>
               <label
                 htmlFor="phone"
@@ -109,7 +93,6 @@ export default function DashboardPage() {
               />
             </div>
 
-            {/* Strategy Dropdown */}
             <div>
               <label
                 htmlFor="strategy"
@@ -132,7 +115,6 @@ export default function DashboardPage() {
               </select>
             </div>
 
-            {/* Dial Button */}
             <div>
               <button
                 type="submit"
@@ -143,7 +125,6 @@ export default function DashboardPage() {
             </div>
           </form>
 
-          {/* Status Message */}
           {status && (
             <p className="text-center text-gray-600 mt-6">{status}</p>
           )}
